@@ -4,64 +4,21 @@
 
 import urllib2
 import urllib
+import argparse
+import time
 
-Reverse_engineering_notes = '''
+import flir_image_extractor
 
-wget --post-data 'action=set&resource=.resmon.action.snapshot&value=true'  http://192.168.15.6/res.php
+parser = argparse.ArgumentParser(description='Functionality to control/read data from the FLIR AX8 camera.')
 
-wget --post-data 'action=get&resource=.image.services.store.filename' http://192.168.15.6/res.php
-
-//Set to MSX:
-.image.sysimg.fusion.fusionData.fusionMode 3
-
-//Set to IR:
-.image.sysimg.fusion.fusionData.fusionMode 1
-.image.sysimg.fusion.fusionData.useLevelSpan 1
-
-//Set to Visual:
-.image.sysimg.fusion.fusionData.fusionMode 1
-.image.sysimg.fusion.fusionData.useLevelSpan 0
-
-
-
-The variable that controls the Lamp is .system.vcam.torch
-
-
-
-In order to enable or disable a given alarm the following Boolean registers should be changed. These registers are accessible via Pass Through Object (EtherNet/IP).
-
-.resmon.items.<alarm#>.active
-
-.image.sysimg.alarms.measfunc.<alarm#>.active
-
-
-Enabling alarm 1
-
-.resmon.items.1.active TRUE
-
-16 2e 72 65 73 6d 6f 6e 2e 69 74 65 6d 73 2e 31 2e 61 63 74 69 76 65 01
-
-.image.sysimg.alarms.measfunc.1.active TRUE
-
-26 2e 69 6d 61 67 65 2e 73 79 73 69 6d 67 2e 61 6c 61 72 6d 73 2e 6d 65 61 73 66 75 6e 63 2e 31 2e 61 63 74 69 76 65 01
-
- 
-
-Disabling alarm 3
-
-.resmon.items.3.active FALSE
-
-16 2e 72 65 73 6d 6f 6e 2e 69 74 65 6d 73 2e 33 2e 61 63 74 69 76 65 00
-
-.image.sysimg.alarms.measfunc.3.active FALSE
-
-26 2e 69 6d 61 67 65 2e 73 79 73 69 6d 67 2e 61 6c 61 72 6d 73 2e 6d 65 61 73 66 75 6e 63 2e 33 2e 61 63 74 69 76 65 00
-
-
-See also: BasicICD.pdf
-
-
-''' 
+parser.add_argument('--type', action="store", help="the type of image (visual/ir/msx", choices = ['msc','ir','visual'])
+parser.add_argument('--nooverlay', action="store_true", help="hide the overlay")
+parser.add_argument('--light', action="store", help="activate the torchlight (on/off)", choices = ['on','off'])
+parser.add_argument('--range', action="store", type=float, nargs=2, help="temperature range")
+parser.add_argument('--snap', action="store", help="take a snapshot with the given filename")
+parser.add_argument('--csv', action="store", help="take a snapshot and export to csv-file")
+parser.add_argument('--plot', action="store_true", help="shows the images")
+parser.add_argument('--url', action="store", help="the url of the camera, including http://", required=True)
 
 def CtoK(temp):
     return temp+273.15
@@ -71,14 +28,29 @@ class Flir:
         self.baseURL = baseURL
 
     def setResource(self,resource,value):
-        return urllib2.urlopen(self.baseURL+'res.php',urllib.urlencode({'action':'set','resource':resource,'value':value})).read()
+        message = urllib2.urlopen(self.baseURL+'res.php',urllib.urlencode({'action':'set','resource':resource,'value':value})).read()
+
+        if (message != "\"\""):
+            print(" Return message when setting " + resource + " to " + str(value) + ":\r\n" +message)
+        
+        return (message)
 
     def getResource(self,resource):
         return urllib2.urlopen(self.baseURL+'res.php',urllib.urlencode({'action':'get','resource':resource})).read()
 
+    #def getSnapshot(self):
+
+
+    def setVisualMode(self):
+        f.setResource('.image.sysimg.fusion.fusionData.fusionMode',1)
+        f.setResource('.image.sysimg.fusion.fusionData.useLevelSpan',0)
+
     def setIRMode(self):
         f.setResource('.image.sysimg.fusion.fusionData.fusionMode',1)
         f.setResource('.image.sysimg.fusion.fusionData.useLevelSpan',1)
+
+    def setMSXMode(self):
+        f.setResource('.image.sysimg.fusion.fusionData.fusionMode',3)
 
     def setPeriodicMode(self):
         f.setResource('.resmon.schedule.active','true')
@@ -94,23 +66,19 @@ class Flir:
         f.setResource('.resmon.schedule.reinit','true')
 
     def getTemperatureValue(self, x, y):
-        #f.setResource('.image.sysimg.measureFuncs.spot.1.active','true')
+        f.setResource('.image.sysimg.measureFuncs.spot.1.active','true')
         f.setResource('.image.sysimg.measureFuncs.spot.1.x',x)
         f.setResource('.image.sysimg.measureFuncs.spot.1.y',y)
         value = f.getResource('.image.sysimg.measureFuncs.spot.1.valueT')
         return float(value[1:-2])
 
-    def setVisualMode(self):
-        f.setResource('.image.sysimg.fusion.fusionData.fusionMode',1)
-        f.setResource('.image.sysimg.fusion.fusionData.useLevelSpan',0)
-
-    def setMSXMode(self):
-        f.setResource('.image.sysimg.fusion.fusionData.fusionMode',3)
-
     def setTemperatureRange(self,minTemp, maxTemp):
         f.setResource('.image.contadj.adjMode', 'manual')
         f.setResource('.image.sysimg.basicImgData.extraInfo.lowT',CtoK(minTemp))
         f.setResource('.image.sysimg.basicImgData.extraInfo.highT',CtoK(maxTemp))
+
+    def setAutoTemperatureRange(self):
+        f.setResource('.image.contadj.adjMode', 'auto')
     
     def showOverlay(self,show=True):
         if show:
@@ -128,46 +96,120 @@ class Flir:
         # iron.pal, bw.pal, rainbow.pal
         f.setResource('.image.sysimage.palette.readFile',palette)
 
-    def getBox(self,boxNumber):
-        ret = {}
-        bns = str(boxNumber)
-        ret['boxNumber']=boxNumber
-        #for field in ('active','avgT','avgValid','x','y','width','height','medianT','medianValid','minT','minValid','minX','minY','maxT','maxValid','maxX','maxY'):
-        for field in ('active','avgT','minT','maxT'):
-            ret[field] =self.getResource('.image.sysimg.measureFuncs.mbox.'+bns+'.'+field)
-            if field == 'active' and ret[field] == '"false"':
-                break
-        return ret
+    def getSnapshot(self, jpgfile):
 
-    def getBoxes(self):
-        ret = []
-        for i in range(1,7):
-            ret.append(self.getBox(i))
-        return ret
+        f.setResource('.image.services.store.format','JPEG')
+        f.setResource('.image.services.store.overlay','true')
+        f.setResource('.image.services.store.owerwrite','true')
+        f.setResource('.image.services.store.fileNameW','snap.jpg')
+        f.setResource('.image.services.store.commit','true')
+        fh = open(jpgfile, "wb")
+        response = urllib2.urlopen('http://192.168.11.47/download.php?file=/snap.jpg')
+        fh.write(response.read())
+        fh.close()
+    
+    def getCsvData(self, jpgfile, csvfile, plot = False):
+
+        fie = flir_image_extractor.FlirImageExtractor()
+        fie.process_image(jpgfile)
+
+        fie.export_thermal_to_csv(csvfile)
+        
+        if (plot):
+            fie.plot()
+
+    #def getBox(self,boxNumber):
+    #    ret = {}
+    #    bns = str(boxNumber)
+    #    ret['boxNumber']=boxNumber
+    #    #for field in ('active','avgT','avgValid','x','y','width','height','medianT','medianValid','minT','minValid','minX','minY','maxT','maxValid','maxX','maxY'):
+    #    for field in ('active','avgT','minT','maxT'):
+    #        ret[field] =self.getResource('.image.sysimg.measureFuncs.mbox.'+bns+'.'+field)
+    #        if field == 'active' and ret[field] == '"false"':
+    #            break
+    #    return ret
+
+    #def getBoxes(self):
+    #    ret = []
+    #    for i in range(1,7):
+    #        ret.append(self.getBox(i))
+    #    return ret
 
 if __name__ == '__main__':
     import sys
-    f = Flir()
-    if len(sys.argv) > 1:
-        res = sys.argv[1]
-        if len(sys.argv) == 2:
-            if sys.argv[1] == '-b':
-                print f.getBox(1)
-            else:
-                print f.getResource(res)
-        elif len(sys.argv) == 3:
-            print f.setResource(res,sys.argv[2])
-        elif sys.argv[1] == '-t':
-            f.setTemperatureRange(float(sys.argv[2]),float(sys.argv[3]))
-    else:
+
+    args = parser.parse_args()
+
+    if (not(args.url.startswith('http://'))):
+        args.url = 'http://' + args.url
+
+    if (not(args.url.endswith('/'))):
+        args.url = args.url + '/'
+
+    f = Flir(baseURL=args.url)
+
+    if (args.type == 'visual'):
+        f.setVisualMode()
+        print("Setting visual mode")
+    elif (args.type == 'ir'):
         f.setIRMode()
-        f.setTemperatureRange(20,45)
-        #f.showOverlay(False)
-        #f.setPeriodicMode()
+        print("Setting IR mode")
+    elif (args.type == 'msx'):
+        f.setMSXMode()
+        print("Setting MSX mode")
+    else:
+        print("Wrong argument given to parameter 'type'")
+
+    if (args.nooverlay):
+        f.showOverlay(False)
+        print("Hiding the overlay")
+    else:
+        f.showOverlay(True)
+        print("Showing the overlay")
+
+    if (args.light == 'off'):
+        f.light(False)
+        print("Torchlight deactivated")
+    elif (args.light == 'on'):
+        f.light(True)
+        print("Torchlight activated")
+
+    if (args.range):
+        f.setTemperatureRange(args.range[0],args.range[1])
+    else:
+        f.setAutoTemperatureRange()
+    
+    if (args.snap):
+        f.getSnapshot(args.snap)
+
+    if (args.csv):
+        if (not args.snap):
+            f.getSnapshot('snap.jpg')
+            f.getCsvData('snap.jpg',args.csv, args.plot)
+        else:
+            f.getCsvData(args.snap, args.csv, args.plot)
+    
+
+    # if len(sys.argv) > 1:
+    #     res = sys.argv[1]
+    #     if len(sys.argv) == 2:
+    #         if sys.argv[1] == '-b':
+    #             print f.getBox(1)
+    #         else:
+    #             print f.getResource(res)
+    #     elif len(sys.argv) == 3:
+    #         print f.setResource(res,sys.argv[2])
+    #     elif sys.argv[1] == '-t':
+    #         f.setTemperatureRange(float(sys.argv[2]),float(sys.argv[3]))
+    # else:
+    #     f.setMSXMode()
+    #     f.setTemperatureRange(20,45)
+    #     f.showOverlay(True)
+    #     #f.setPeriodicMode()
         
-        for i in range(1,80):
-            for j in range(1,60):
-                print("value in " + str(i) + "," + str(j) + " is " + str(f.getTemperatureValue(i,j)))
+        #for i in range(1,80):
+        #    for j in range(1,60):
+        #        print("value in " + str(i) + "," + str(j) + " is " + str(f.getTemperatureValue(i,j)))
             
         #f.setPalette('bw.pal')
 
