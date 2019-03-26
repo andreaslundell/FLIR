@@ -2,23 +2,30 @@
 
 # Interface to FLIR AX8 camera
 
-import urllib2
-import urllib
+import urllib2 # Python2
+import urllib # Python 2
 import argparse
 import time
+import datetime
+from time import strftime
 
 import flir_image_extractor
 
 parser = argparse.ArgumentParser(description='Functionality to control/read data from the FLIR AX8 camera.')
 
-parser.add_argument('--type', action="store", help="the type of image (visual/ir/msx", choices = ['msc','ir','visual'])
-parser.add_argument('--nooverlay', action="store_true", help="hide the overlay")
-parser.add_argument('--light', action="store", help="activate the torchlight (on/off)", choices = ['on','off'])
-parser.add_argument('--range', action="store", type=float, nargs=2, help="temperature range")
+parser.add_argument('--url', action="store", help="the url of the camera, including http://", required=True)
+parser.add_argument('--type', action="store", help="the type of image", choices = ['msx','ir','visual'])
 parser.add_argument('--snap', action="store", help="take a snapshot with the given filename")
+parser.add_argument('--interval', action="store", type=float, help="tries to take snapshots at given interval")
 parser.add_argument('--csv', action="store", help="take a snapshot and export to csv-file")
 parser.add_argument('--plot', action="store_true", help="shows the images")
-parser.add_argument('--url', action="store", help="the url of the camera, including http://", required=True)
+parser.add_argument('--range', action="store", type=float, nargs=2, help="temperature range")
+parser.add_argument('--autorange', action="store_true", help="use auto scale")
+parser.add_argument('--nooverlay', action="store_true", help="hide the overlay")
+parser.add_argument('--light', action="store", help="activate the torchlight", choices = ['on','off'])
+parser.add_argument('--debug', action="store_true", help="prints extra debug information")
+
+debug = False
 
 def CtoK(temp):
     return temp+273.15
@@ -28,18 +35,16 @@ class Flir:
         self.baseURL = baseURL
 
     def setResource(self,resource,value):
-        message = urllib2.urlopen(self.baseURL+'res.php',urllib.urlencode({'action':'set','resource':resource,'value':value})).read()
+        message = urllib2.urlopen(self.baseURL+'res.php',urllib.urlencode({'action':'set','resource':resource,'value':value})).read() # Python 2
+        #message = urlopen(self.baseURL+'res.php', urlencode({'action':'set','resource':resource,'value':value})).read()
 
-        if (message != "\"\""):
+        if (debug and message != "\"\""):
             print(" Return message when setting " + resource + " to " + str(value) + ":\r\n" +message)
         
         return (message)
 
     def getResource(self,resource):
         return urllib2.urlopen(self.baseURL+'res.php',urllib.urlencode({'action':'get','resource':resource})).read()
-
-    #def getSnapshot(self):
-
 
     def setVisualMode(self):
         f.setResource('.image.sysimg.fusion.fusionData.fusionMode',1)
@@ -98,22 +103,45 @@ class Flir:
 
     def getSnapshot(self, jpgfile):
 
+        start = time.time()
+
+        dt = datetime.datetime.now()
+        filename = 'ax8' + str(dt.hour) + "-" + str(dt.minute) + "-" + str(dt.second) + ".jpg"
+
         f.setResource('.image.services.store.format','JPEG')
         f.setResource('.image.services.store.overlay','true')
         f.setResource('.image.services.store.owerwrite','true')
-        f.setResource('.image.services.store.fileNameW','snap.jpg')
+        f.setResource('.image.services.store.fileNameW','/FLIR/images/' + filename)
         f.setResource('.image.services.store.commit','true')
         fh = open(jpgfile, "wb")
-        response = urllib2.urlopen('http://192.168.11.47/download.php?file=/snap.jpg')
-        fh.write(response.read())
+
+        ready = False
+
+        while not(ready):
+            try:
+                response = urllib2.urlopen('http://192.168.11.47/download.php?file=/FLIR/images/' + filename)
+                ready = True
+                fh.write(response.read())
+            except urllib2.HTTPError as e:
+                time.sleep(0.05)
         fh.close()
+
+        end = time.time()
+
+        print("Downloaded image " + jpgfile + " from camera in " + str(end-start) + " s.")
     
     def getCsvData(self, jpgfile, csvfile, plot = False):
 
+        start = time.time()
+                    
         fie = flir_image_extractor.FlirImageExtractor()
         fie.process_image(jpgfile)
 
         fie.export_thermal_to_csv(csvfile)
+
+        end = time.time()
+                    
+        print("Thermal data in picture " + jpgfile + " written to " + csvfile + " in " + str(end-start) + " s.")
         
         if (plot):
             fie.plot()
@@ -139,6 +167,9 @@ if __name__ == '__main__':
     import sys
 
     args = parser.parse_args()
+
+    if (args.debug):
+        debug = True
 
     if (not(args.url.startswith('http://'))):
         args.url = 'http://' + args.url
@@ -173,13 +204,31 @@ if __name__ == '__main__':
     elif (args.light == 'on'):
         f.light(True)
         print("Torchlight activated")
+    
+    if (args.autorange):
+        f.setAutoTemperatureRange()
+        print("Auto range set")
 
     if (args.range):
         f.setTemperatureRange(args.range[0],args.range[1])
-    else:
-        f.setAutoTemperatureRange()
+        print("Range set to [" + str(args.range[0]) + "," + str(args.range[1]) + "]")
     
-    if (args.snap):
+    if (args.interval):
+        if (args.snap):
+          
+            while True:
+                timestamp = strftime("%H%M%S")
+                filename = args.snap.strip('.jpg') + '_' + timestamp + '.jpg'
+                f.getSnapshot(filename)
+
+                if (args.csv):
+                    filenamecsv = filename.strip('.jpg') + '.csv'
+                    f.getCsvData(filename, filenamecsv, False)
+
+                if (args.interval > 0):
+                    time.sleep(args.interval)
+
+    elif (args.snap):
         f.getSnapshot(args.snap)
 
     if (args.csv):
