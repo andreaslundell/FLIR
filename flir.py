@@ -136,19 +136,19 @@ class Flir:
                 ready = True
                 fh.write(response.content)
             else:
-                time.sleep(0.1)
+                time.sleep(0.3)
                 response = session.get(self.baseURL + 'download.php', data={'file':'/FLIR/images/' + filename}, allow_redirects=True)
 
         fh.close()
 
         print("Deleting picture: " + filename)
-        message = session.post(self.baseURL + 'storage/delete/image' + filename)
+        message = session.post(self.baseURL + 'storage/delete/image/' + filename)
 
         if ('login' in message.text):
             print("Need to log in first")
             self.login()
 
-            message = session.post(self.baseURL + 'storage/delete/image' + filename)
+            message = session.post(self.baseURL + 'storage/delete/image/' + filename)
 
         end = time.time()
 
