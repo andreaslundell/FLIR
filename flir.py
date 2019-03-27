@@ -2,8 +2,7 @@
 
 # Interface to FLIR AX8 camera
 
-import urllib2 # Python2
-import urllib # Python 2
+import requests
 import argparse
 import time
 import datetime
@@ -26,6 +25,8 @@ parser.add_argument('--light', action="store", help="activate the torchlight", c
 parser.add_argument('--debug', action="store_true", help="prints extra debug information")
 
 debug = False
+session = requests.Session()
+
 
 def CtoK(temp):
     return temp+273.15
@@ -35,16 +36,15 @@ class Flir:
         self.baseURL = baseURL
 
     def setResource(self,resource,value):
-        message = urllib2.urlopen(self.baseURL+'res.php',urllib.urlencode({'action':'set','resource':resource,'value':value})).read() # Python 2
-        #message = urlopen(self.baseURL+'res.php', urlencode({'action':'set','resource':resource,'value':value})).read()
+        message = session.post(self.baseURL + 'res.php', data={'action':'set','resource':resource,'value':value})
 
         if (debug and message != "\"\""):
             print(" Return message when setting " + resource + " to " + str(value) + ":\r\n" +message)
-        
+
         return (message)
 
     def getResource(self,resource):
-        return urllib2.urlopen(self.baseURL+'res.php',urllib.urlencode({'action':'get','resource':resource})).read()
+        return session.post(self.baseURL + 'res.php', data={'action':'get','resource':resource})
 
     def setVisualMode(self):
         f.setResource('.image.sysimg.fusion.fusionData.fusionMode',1)
@@ -84,7 +84,7 @@ class Flir:
 
     def setAutoTemperatureRange(self):
         f.setResource('.image.contadj.adjMode', 'auto')
-    
+
     def showOverlay(self,show=True):
         if show:
             f.setResource('.resmon.config.hideGraphics','false')
@@ -101,12 +101,19 @@ class Flir:
         # iron.pal, bw.pal, rainbow.pal
         f.setResource('.image.sysimage.palette.readFile',palette)
 
+    def login(self):
+        print("Logging in")
+        message = session.post(self.baseURL + 'login/dologin', data={'user_name':'admin','user_password':'edgeadmin'})
+
+        if (not('success' in message.text)):
+            print("Could not log in.")
+
     def getSnapshot(self, jpgfile):
 
         start = time.time()
 
         dt = datetime.datetime.now()
-        filename = 'ax8' + str(dt.hour) + "-" + str(dt.minute) + "-" + str(dt.second) + ".jpg"
+        filename = 'img-' + str(dt.year) + str(dt.month) + str(dt.day) + "-" + str(dt.hour) + str(dt.minute) + str(dt.second) + ".jpg"
 
         f.setResource('.image.services.store.format','JPEG')
         f.setResource('.image.services.store.overlay','true')
@@ -117,32 +124,49 @@ class Flir:
 
         ready = False
 
+        print("Getting image from camera")
         while not(ready):
-            try:
-                response = urllib2.urlopen('http://192.168.11.47/download.php?file=/FLIR/images/' + filename)
+            response = session.get(self.baseURL + 'storage/download/image/' + filename, allow_redirects=True)
+
+            #if response.status_code == 404:
+            #    print(response.text)
+            #    #f.login()
+            #el
+            if response.status_code == requests.codes.ok:
                 ready = True
-                fh.write(response.read())
-            except urllib2.HTTPError as e:
-                time.sleep(0.05)
+                fh.write(response.content)
+            else:
+                time.sleep(0.1)
+                response = session.get(self.baseURL + 'download.php', data={'file':'/FLIR/images/' + filename}, allow_redirects=True)
+
         fh.close()
+
+        print("Deleting picture: " + filename)
+        message = session.post(self.baseURL + 'storage/delete/image' + filename)
+
+        if ('login' in message.text):
+            print("Need to log in first")
+            self.login()
+
+            message = session.post(self.baseURL + 'storage/delete/image' + filename)
 
         end = time.time()
 
         print("Downloaded image " + jpgfile + " from camera in " + str(end-start) + " s.")
-    
+
     def getCsvData(self, jpgfile, csvfile, plot = False):
 
         start = time.time()
-                    
+
         fie = flir_image_extractor.FlirImageExtractor()
         fie.process_image(jpgfile)
 
         fie.export_thermal_to_csv(csvfile)
 
         end = time.time()
-                    
+
         print("Thermal data in picture " + jpgfile + " written to " + csvfile + " in " + str(end-start) + " s.")
-        
+
         if (plot):
             fie.plot()
 
@@ -179,6 +203,8 @@ if __name__ == '__main__':
 
     f = Flir(baseURL=args.url)
 
+    f.login()
+
     if (args.type == 'visual'):
         f.setVisualMode()
         print("Setting visual mode")
@@ -204,7 +230,7 @@ if __name__ == '__main__':
     elif (args.light == 'on'):
         f.light(True)
         print("Torchlight activated")
-    
+
     if (args.autorange):
         f.setAutoTemperatureRange()
         print("Auto range set")
@@ -212,10 +238,10 @@ if __name__ == '__main__':
     if (args.range):
         f.setTemperatureRange(args.range[0],args.range[1])
         print("Range set to [" + str(args.range[0]) + "," + str(args.range[1]) + "]")
-    
+
     if (args.interval):
         if (args.snap):
-          
+
             while True:
                 timestamp = strftime("%H%M%S")
                 filename = args.snap.strip('.jpg') + '_' + timestamp + '.jpg'
@@ -237,7 +263,6 @@ if __name__ == '__main__':
             f.getCsvData('snap.jpg',args.csv, args.plot)
         else:
             f.getCsvData(args.snap, args.csv, args.plot)
-    
 
     # if len(sys.argv) > 1:
     #     res = sys.argv[1]
@@ -255,11 +280,7 @@ if __name__ == '__main__':
     #     f.setTemperatureRange(20,45)
     #     f.showOverlay(True)
     #     #f.setPeriodicMode()
-        
         #for i in range(1,80):
         #    for j in range(1,60):
         #        print("value in " + str(i) + "," + str(j) + " is " + str(f.getTemperatureValue(i,j)))
-            
         #f.setPalette('bw.pal')
-
-    
